@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: arabia-ecom-api
+    env: python
+    region: singapore
+    plan: starter
+    branch: main
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: arabiaecom-postgres
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_MINUTES
+        value: "10080"
+      - key: FERNET_KEY
+        sync: false  # set manually with `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: "gpt-4o-mini"
+      - key: META_GRAPH_VERSION
+        value: "v21.0"
+      - key: APP_ENV
+        value: "production"
+      - key: FRONTEND_BASE_URL
+        value: "https://arabia-ecom.vercel.app"
+      - key: LINK_DOMAIN
+        value: "https://arabia-ecom.vercel.app"
+      - key: WA_VERIFY_TOKEN
+        sync: false
+
+databases:
+  - name: arabiaecom-postgres
+    region: singapore
+    plan: starter
