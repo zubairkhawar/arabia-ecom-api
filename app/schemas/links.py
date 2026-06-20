@@ -9,8 +9,9 @@ class LinkResolveOut(BaseModel):
     price: float
     currency: str
     pixel_id: Optional[str]
+    default_event: str = "InitiateCheckout"
     wa_target_number: str
-    wa_deeplink: str           # e.g. https://wa.me/971...?text=...%20[c_xxx]
+    wa_deeplink: str           # e.g. https://wa.me/971...?text=...%20[ref:c_xxx]
     ref_token: str
     reseller_id: str
     reseller_name: str
@@ -21,14 +22,18 @@ class ClickIn(BaseModel):
     src_platform: Optional[str] = "other"
     fbclid: Optional[str] = None
     fbp: Optional[str] = None
+    fbc: Optional[str] = None  # pre-built by client if it has one
     ttclid: Optional[str] = None
     sclid: Optional[str] = None
     gclid: Optional[str] = None
     utm_source: Optional[str] = None
     utm_medium: Optional[str] = None
     utm_campaign: Optional[str] = None
+    utm_content: Optional[str] = None
+    utm_term: Optional[str] = None
     user_agent: Optional[str] = None
     referer: Optional[str] = None
+    landing_url: Optional[str] = None
 
 
 class ClickOut(BaseModel):
@@ -39,6 +44,19 @@ class ClickOut(BaseModel):
     wa_deeplink: str
     capi_status: str
     capi_response_code: Optional[int]
+    bot: bool = False
+
+
+class PixelFiredIn(BaseModel):
+    click_session_id: str
+
+
+class MetaVerifyOut(BaseModel):
+    ok: bool
+    capi_status: int
+    capi_response: str
+    pixel_id: Optional[str]
+    verified: bool
 
 
 class AttributionEventOut(BaseModel):

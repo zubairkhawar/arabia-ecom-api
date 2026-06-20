@@ -2,8 +2,8 @@
 
 Phase 1 fires real Meta CAPI events. Other platforms (TikTok, Snap, Google)
 are recorded in `attribution_events` with status='skipped' for now — the
-interface is here so wiring them in P1.5 is just a matter of filling in
-the actual API call.
+interface is here so wiring them in Phase 1.5 is just a matter of filling
+in the actual API call.
 """
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
@@ -21,14 +21,18 @@ from ..security import decrypt
 from . import meta_capi
 
 
-async def dispatch_add_to_cart(
+async def dispatch_top_of_funnel(
     db: Session,
     reseller: Reseller,
     click: ClickSession,
     product: Product,
+    event_name: str = "InitiateCheckout",
 ) -> AttributionEvent:
-    """Server-side mirror of the browser Pixel AddToCart. Same event_id so
-    Meta dedupes if both arrive."""
+    """Server-side mirror of the browser Pixel top-of-funnel event
+    (InitiateCheckout / AddToCart / ViewContent / Lead).
+
+    Uses a stored event_id so a subsequent browser pixel call with the
+    same eventID is deduped by Meta."""
     if click.add_to_cart_event_id:
         event_id = click.add_to_cart_event_id
     else:
@@ -38,7 +42,7 @@ async def dispatch_add_to_cart(
     if click.src_platform == "meta":
         return await _send_meta(
             db, reseller, click, order=None,
-            event_name="AddToCart",
+            event_name=event_name,
             event_id=event_id,
             value=product.price,
             currency=product.currency,
@@ -46,12 +50,11 @@ async def dispatch_add_to_cart(
             contents=[{"id": product.id, "quantity": 1, "item_price": product.price}],
         )
     else:
-        # Log only; TikTok/Snap/Google real CAPI is Phase 1.5
         evt = AttributionEvent(
             reseller_id=reseller.id,
             click_session_id=click.id,
             platform=click.src_platform,
-            event_name="AddToCart",
+            event_name=event_name,
             event_id=event_id,
             value=product.price,
             currency=product.currency,
@@ -62,6 +65,10 @@ async def dispatch_add_to_cart(
         return evt
 
 
+# Back-compat alias — older tests / callers may still import this
+dispatch_add_to_cart = dispatch_top_of_funnel
+
+
 async def dispatch_purchase(
     db: Session,
     reseller: Reseller,
@@ -70,7 +77,6 @@ async def dispatch_purchase(
     if order.purchase_event_sent:
         return None
     if not order.click_session_id:
-        # No click_session → organic / unattributable
         evt = AttributionEvent(
             reseller_id=reseller.id,
             order_id=order.id,
@@ -129,6 +135,42 @@ async def dispatch_purchase(
     return result
 
 
+async def send_test_event(
+    db: Session, reseller: Reseller, cfg: MetaConfig
+) -> Dict[str, Any]:
+    """Fire a no-value test InitiateCheckout to Meta CAPI to verify the
+    credentials. Returns the raw response details for the UI."""
+    if not cfg.pixel_id or not cfg.capi_access_token_enc:
+        return {"ok": False, "status": 0, "body": "missing pixel_id or access_token"}
+    event_id = meta_capi.gen_event_id()
+    payload = meta_capi.build_event(
+        event_name="InitiateCheckout",
+        event_id=event_id,
+        fbp=None, fbc=None,
+        client_ip=None, client_ua="arabia-ecom-api/verify",
+        action_source=cfg.action_source or "website",
+    )
+    result = await meta_capi.send_event(
+        pixel_id=cfg.pixel_id,
+        access_token=decrypt(cfg.capi_access_token_enc),
+        event=payload,
+        test_event_code=cfg.test_event_code,
+    )
+    ok = 200 <= result.get("status", 0) < 300
+    # log it
+    db.add(AttributionEvent(
+        reseller_id=reseller.id,
+        platform="meta",
+        event_name="InitiateCheckout",
+        event_id=event_id,
+        status="sent" if ok else "failed",
+        response_code=result.get("status"),
+        response_body=(result.get("body") or "")[:2000],
+        payload=payload,
+    ))
+    return {"ok": ok, **result}
+
+
 async def _send_meta(
     db: Session,
     reseller: Reseller,
@@ -181,7 +223,8 @@ async def _send_meta(
         currency=currency,
         content_ids=content_ids,
         contents=contents,
-        event_source_url=click.referer,
+        event_source_url=click.landing_url or click.referer,
+        action_source=cfg.action_source or "website",
     )
 
     access_token = decrypt(cfg.capi_access_token_enc)
@@ -208,6 +251,6 @@ async def _send_meta(
         payload=payload,
     )
     db.add(evt)
-    if event_name == "AddToCart":
+    if event_name == "InitiateCheckout":
         click.add_to_cart_sent = (status == "sent")
     return evt

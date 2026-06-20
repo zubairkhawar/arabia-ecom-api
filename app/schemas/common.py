@@ -75,13 +75,19 @@ class MetaConfigIn(BaseModel):
     pixel_id: Optional[str] = None
     capi_access_token: Optional[str] = None
     test_event_code: Optional[str] = None
+    default_event: Optional[str] = None       # InitiateCheckout | AddToCart | ViewContent | Lead
+    action_source: Optional[str] = None       # website | business_messaging
 
 
 class MetaConfigOut(BaseModel):
     pixel_id: Optional[str]
     has_token: bool
     test_event_code: Optional[str]
-    verified: bool
+    default_event: str = "InitiateCheckout"
+    action_source: str = "website"
+    is_pixel_verified: bool = False
+    is_capi_verified: bool = False
+    verified: bool  # legacy aggregate
 
 
 class WhatsAppConfigIn(BaseModel):

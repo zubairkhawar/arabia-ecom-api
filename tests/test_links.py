@@ -8,7 +8,7 @@ def test_resolve_returns_deeplink_with_ref_token(client, auth, reseller, pool_ua
     body = r.json()
     assert body["product_id"] == p["id"]
     assert body["wa_target_number"]
-    assert "%5Bc_" in body["wa_deeplink"]  # bracket URL-encoded
+    assert "%5Bref%3Ac_" in body["wa_deeplink"]  # [ref:c_xxx], URL-encoded
     assert body["ref_token"] in body["wa_deeplink"]
 
 
@@ -36,5 +36,6 @@ def test_click_records_session_and_attribution_event(client, auth, reseller, poo
 
     evt = db.query(AttributionEvent).filter(AttributionEvent.click_session_id == cs.id).first()
     assert evt is not None
-    assert evt.event_name == "AddToCart"
+    # Top-of-funnel event is now configurable; default is InitiateCheckout
+    assert evt.event_name == "InitiateCheckout"
     assert evt.status == "skipped"

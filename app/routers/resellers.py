@@ -58,20 +58,32 @@ def update_ai_settings(
 
 # ---------- Meta Pixel + CAPI config ----------
 
+def _serialize_meta(cfg: MetaConfig | None) -> MetaConfigOut:
+    if not cfg:
+        return MetaConfigOut(
+            pixel_id=None, has_token=False, test_event_code=None,
+            default_event="InitiateCheckout", action_source="website",
+            is_pixel_verified=False, is_capi_verified=False, verified=False,
+        )
+    return MetaConfigOut(
+        pixel_id=cfg.pixel_id,
+        has_token=bool(cfg.capi_access_token_enc),
+        test_event_code=cfg.test_event_code,
+        default_event=cfg.default_event or "InitiateCheckout",
+        action_source=cfg.action_source or "website",
+        is_pixel_verified=cfg.is_pixel_verified,
+        is_capi_verified=cfg.is_capi_verified,
+        verified=cfg.verified,
+    )
+
+
 @router.get("/meta-config", response_model=MetaConfigOut)
 def get_meta_config(
     current: Reseller = Depends(get_current_reseller),
     db: Session = Depends(get_db),
 ):
     cfg = db.execute(select(MetaConfig).where(MetaConfig.reseller_id == current.id)).scalar_one_or_none()
-    if not cfg:
-        return MetaConfigOut(pixel_id=None, has_token=False, test_event_code=None, verified=False)
-    return MetaConfigOut(
-        pixel_id=cfg.pixel_id,
-        has_token=bool(cfg.capi_access_token_enc),
-        test_event_code=cfg.test_event_code,
-        verified=cfg.verified,
-    )
+    return _serialize_meta(cfg)
 
 
 @router.put("/meta-config", response_model=MetaConfigOut)
@@ -85,20 +97,65 @@ def upsert_meta_config(
         cfg = MetaConfig(reseller_id=current.id)
         db.add(cfg)
     if payload.pixel_id is not None:
-        cfg.pixel_id = payload.pixel_id
+        cfg.pixel_id = payload.pixel_id or None
+        cfg.is_pixel_verified = False
     if payload.capi_access_token:
         cfg.capi_access_token_enc = encrypt(payload.capi_access_token)
+        cfg.is_capi_verified = False
     if payload.test_event_code is not None:
         cfg.test_event_code = payload.test_event_code or None
+    if payload.default_event:
+        if payload.default_event not in ("InitiateCheckout", "AddToCart", "ViewContent", "Lead"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "default_event must be InitiateCheckout|AddToCart|ViewContent|Lead")
+        cfg.default_event = payload.default_event
+    if payload.action_source:
+        if payload.action_source not in ("website", "business_messaging"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                "action_source must be website|business_messaging")
+        cfg.action_source = payload.action_source
     cfg.verified = bool(cfg.pixel_id and cfg.capi_access_token_enc)
     db.commit()
     db.refresh(cfg)
-    return MetaConfigOut(
-        pixel_id=cfg.pixel_id,
-        has_token=bool(cfg.capi_access_token_enc),
-        test_event_code=cfg.test_event_code,
-        verified=cfg.verified,
-    )
+    return _serialize_meta(cfg)
+
+
+@router.post("/meta-config/verify")
+async def verify_meta_config(
+    current: Reseller = Depends(get_current_reseller),
+    db: Session = Depends(get_db),
+):
+    """Send a test InitiateCheckout to Meta CAPI to confirm the credentials
+    work. On success, flips is_capi_verified=true. Returns raw Meta response
+    for surface in the UI."""
+    cfg = db.execute(select(MetaConfig).where(MetaConfig.reseller_id == current.id)).scalar_one_or_none()
+    if not cfg or not cfg.pixel_id or not cfg.capi_access_token_enc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Save pixel_id + capi_access_token first")
+    from ..services.attribution import send_test_event
+    result = await send_test_event(db, current, cfg)
+    if result["ok"]:
+        cfg.is_capi_verified = True
+        cfg.verified = True
+    db.commit()
+    return {
+        "ok": result["ok"],
+        "capi_status": result.get("status", 0),
+        "capi_response": (result.get("body") or "")[:1500],
+        "pixel_id": cfg.pixel_id,
+        "verified": cfg.is_capi_verified,
+    }
+
+
+@router.delete("/meta-config", status_code=status.HTTP_204_NO_CONTENT)
+def delete_meta_config(
+    current: Reseller = Depends(get_current_reseller),
+    db: Session = Depends(get_db),
+):
+    cfg = db.execute(select(MetaConfig).where(MetaConfig.reseller_id == current.id)).scalar_one_or_none()
+    if cfg:
+        db.delete(cfg)
+        db.commit()
 
 
 # ---------- WhatsApp config ----------

@@ -32,7 +32,9 @@ from ..services.whatsapp_cloud import send_text
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-REF_RE = re.compile(r"\[(c_[a-z0-9]{4,12})\]")
+# Matches both the spec format [ref:c_xxx] and the legacy [c_xxx] so older
+# pre-format-change deeplinks still attribute correctly.
+REF_RE = re.compile(r"\[(?:ref:)?(c_[a-z0-9]{4,12})\]")
 
 
 @router.get("/wa/{reseller_id}")

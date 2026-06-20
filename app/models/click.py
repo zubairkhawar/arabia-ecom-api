@@ -9,8 +9,8 @@ from ._base import IdMixin, TimestampMixin
 
 class ClickSession(Base, IdMixin, TimestampMixin):
     """Records every click on a product link.
-    The `ref_token` is embedded in the WhatsApp prefilled message so the
-    inbound webhook can match the chat back to this click."""
+    The `ref_token` is embedded in the WhatsApp prefilled message ([ref:c_xxxxxxxx])
+    so the inbound webhook can match the chat back to this click."""
 
     __tablename__ = "click_sessions"
 
@@ -30,14 +30,23 @@ class ClickSession(Base, IdMixin, TimestampMixin):
     utm_source: Mapped[Optional[str]] = mapped_column(String(64))
     utm_medium: Mapped[Optional[str]] = mapped_column(String(64))
     utm_campaign: Mapped[Optional[str]] = mapped_column(String(120))
+    utm_content: Mapped[Optional[str]] = mapped_column(String(120))
+    utm_term: Mapped[Optional[str]] = mapped_column(String(120))
 
     ip: Mapped[Optional[str]] = mapped_column(String(64))
     user_agent: Mapped[Optional[str]] = mapped_column(Text)
     referer: Mapped[Optional[str]] = mapped_column(Text)
+    landing_url: Mapped[Optional[str]] = mapped_column(Text)
 
+    # resolved routing
+    wa_number: Mapped[Optional[str]] = mapped_column(String(32))
+    pool_number_id: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("pool_numbers.id", ondelete="SET NULL"))
+
+    # event state
     matched_chat_id: Mapped[Optional[str]] = mapped_column(String(32))
     add_to_cart_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     add_to_cart_event_id: Mapped[Optional[str]] = mapped_column(String(64))
+    capi_lead_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     purchase_event_id: Mapped[Optional[str]] = mapped_column(String(64))
 
 
@@ -52,7 +61,7 @@ class AttributionEvent(Base, IdMixin, TimestampMixin):
     order_id: Mapped[Optional[str]] = mapped_column(String(32), ForeignKey("orders.id", ondelete="SET NULL"))
 
     platform: Mapped[str] = mapped_column(String(16))    # meta | tiktok | snapchat | google
-    event_name: Mapped[str] = mapped_column(String(64))  # AddToCart | Purchase | Lead
+    event_name: Mapped[str] = mapped_column(String(64))  # AddToCart | Purchase | Lead | InitiateCheckout
     event_id: Mapped[str] = mapped_column(String(64), index=True)
     value: Mapped[Optional[float]] = mapped_column(Float)
     currency: Mapped[Optional[str]] = mapped_column(String(8))

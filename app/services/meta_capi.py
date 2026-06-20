@@ -41,6 +41,15 @@ def _sha256(value: Optional[str]) -> Optional[str]:
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
 
 
+def _normalize_phone(raw: Optional[str]) -> Optional[str]:
+    """Meta wants phone numbers in E.164 digits-only form (no '+', spaces,
+    or dashes) before hashing. e.g. '+971 50 123 4567' → '971501234567'."""
+    if not raw:
+        return None
+    cleaned = "".join(ch for ch in raw if ch.isdigit())
+    return cleaned or None
+
+
 def build_event(
     event_name: str,
     event_id: str,
@@ -67,7 +76,9 @@ def build_event(
     if client_ua:
         user_data["client_user_agent"] = client_ua
     if phone:
-        user_data["ph"] = [_sha256(phone)]
+        normalized = _normalize_phone(phone)
+        if normalized:
+            user_data["ph"] = [_sha256(normalized)]
     if email:
         user_data["em"] = [_sha256(email)]
 
