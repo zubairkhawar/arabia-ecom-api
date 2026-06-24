@@ -1,48 +1,22 @@
 """Test fixtures.
 
 The Render DB is shared (dev), so each fixture cleans up after itself in
-FK-safe order. `_hard_delete_reseller` is a TEST-ONLY helper — production
-keeps RESTRICT on order_items.product_id so deleting an individual product
-doesn't wipe order history.
+FK-safe order via app.services.cleanup.hard_delete_reseller.
 """
 import pytest
 import secrets
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 
 from app.db import SessionLocal
 from app.main import app
-from app.models import Reseller, AISetting, PoolNumber
-from app.security import hash_password
+from app.models import Reseller, AISetting, PoolNumber, AdminUser
+from app.security import hash_password, issue_jwt
+from app.services.cleanup import hard_delete_reseller
 
 
-def _hard_delete_reseller(db: Session, reseller_id: str) -> None:
-    """Delete a reseller and everything they touched, in FK-safe order."""
-    p = {"rid": reseller_id}
-    statements = [
-        "DELETE FROM attribution_events WHERE reseller_id = :rid",
-        "DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE reseller_id = :rid)",
-        "DELETE FROM orders WHERE reseller_id = :rid",
-        "DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE reseller_id = :rid)",
-        "DELETE FROM chats WHERE reseller_id = :rid",
-        "DELETE FROM click_sessions WHERE reseller_id = :rid",
-        "DELETE FROM product_options WHERE product_id IN (SELECT id FROM products WHERE reseller_id = :rid)",
-        "DELETE FROM product_variants WHERE product_id IN (SELECT id FROM products WHERE reseller_id = :rid)",
-        "DELETE FROM product_bundles WHERE product_id IN (SELECT id FROM products WHERE reseller_id = :rid)",
-        "DELETE FROM products WHERE reseller_id = :rid",
-        "DELETE FROM customers WHERE reseller_id = :rid",
-        "DELETE FROM templates WHERE reseller_id = :rid",
-        "DELETE FROM ai_settings WHERE reseller_id = :rid",
-        "DELETE FROM meta_configs WHERE reseller_id = :rid",
-        "DELETE FROM whatsapp_configs WHERE reseller_id = :rid",
-        "DELETE FROM pool_assignments WHERE reseller_id = :rid",
-        "DELETE FROM usages WHERE reseller_id = :rid",
-        "DELETE FROM resellers WHERE id = :rid",
-    ]
-    for s in statements:
-        db.execute(text(s), p)
-    db.commit()
+# Back-compat alias for older test files.
+_hard_delete_reseller = hard_delete_reseller
 
 
 @pytest.fixture()
@@ -73,20 +47,25 @@ def reseller(db: Session) -> Reseller:
     db.commit()
     rid = r.id
     yield r
-    _hard_delete_reseller(db, rid)
+    hard_delete_reseller(db, rid)
 
 
 @pytest.fixture()
-def admin_user(db: Session) -> Reseller:
-    email = f"admin+{secrets.token_hex(4)}@example.com"
-    r = Reseller(
-        name="Admin", email=email, password_hash=hash_password("secret"),
-        plan="platinum", role="admin", country="UAE", currency="AED",
+def admin_user(db: Session) -> AdminUser:
+    """A dedicated admin user for tests. We mint a token directly via
+    issue_jwt instead of logging in, because the /auth/login admin path
+    is reserved for the protected admin email."""
+    email = f"test-admin+{secrets.token_hex(4)}@example.test"
+    a = AdminUser(
+        name="Test Admin",
+        email=email,
+        password_hash=hash_password("secret"),
+        level="Admin",
+        enabled=True,
     )
-    db.add(r); db.commit()
-    rid = r.id
-    yield r
-    _hard_delete_reseller(db, rid)
+    db.add(a); db.commit()
+    yield a
+    db.delete(a); db.commit()
 
 
 @pytest.fixture()
@@ -96,9 +75,8 @@ def token(client: TestClient, reseller: Reseller) -> str:
 
 
 @pytest.fixture()
-def admin_token(client: TestClient, admin_user: Reseller) -> str:
-    r = client.post("/auth/login", json={"email": admin_user.email, "password": "secret"})
-    return r.json()["access_token"]
+def admin_token(admin_user: AdminUser) -> str:
+    return issue_jwt(admin_user.id, kind="admin", role="admin")
 
 
 @pytest.fixture()
@@ -113,8 +91,6 @@ def admin_auth(admin_token: str) -> dict:
 
 @pytest.fixture()
 def pool_uae(db: Session) -> PoolNumber:
-    """Ensure there's at least one active UAE pool number. Does not delete it
-    at the end — pool numbers are admin-managed shared infra in this DB."""
     existing = db.query(PoolNumber).filter(
         PoolNumber.country_code == "UAE", PoolNumber.status == "active"
     ).first()

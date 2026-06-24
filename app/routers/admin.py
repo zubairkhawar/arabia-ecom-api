@@ -192,35 +192,30 @@ def list_admins(
 @router.post("/users", response_model=AdminUserOut, status_code=status.HTTP_201_CREATED)
 def add_admin(
     payload: AdminUserIn,
-    _: Reseller = Depends(require_admin),
+    _: AdminUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    existing = db.execute(select(AdminUser).where(AdminUser.email == payload.email)).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
-    a = AdminUser(
-        name=payload.name,
-        email=payload.email,
-        level=payload.level,
-        enabled=True,
-        password_hash=hash_password("change-me-now"),
+    """Disabled — the platform has exactly one admin account, configured
+    via ADMIN_EMAIL env var. Additional admin users cannot be created."""
+    raise HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        "Multi-admin is disabled. The sole admin is configured via ADMIN_EMAIL.",
     )
-    db.add(a)
-    db.commit()
-    db.refresh(a)
-    return a
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)
 def toggle_admin(
     user_id: str,
     payload: AdminUserToggle,
-    _: Reseller = Depends(require_admin),
+    _: AdminUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    from ..config import settings
     a = db.get(AdminUser, user_id)
     if not a:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "admin not found")
+    if a.email.lower() == settings.admin_email.lower():
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot disable the sole platform admin.")
     a.enabled = payload.enabled
     db.commit()
     db.refresh(a)
@@ -230,14 +225,15 @@ def toggle_admin(
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_admin(
     user_id: str,
-    _: Reseller = Depends(require_admin),
+    _: AdminUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    from ..config import settings
     a = db.get(AdminUser, user_id)
     if not a:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "admin not found")
-    if a.level == "Owner":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "cannot remove Owner")
+    if a.email.lower() == settings.admin_email.lower() or a.level == "Owner":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Cannot delete the sole platform admin.")
     db.delete(a)
     db.commit()
 

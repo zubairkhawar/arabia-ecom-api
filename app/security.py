@@ -31,10 +31,15 @@ def decrypt(token: str) -> str:
     return _fernet.decrypt(token.encode()).decode()
 
 
-def issue_jwt(subject: str, role: str = "reseller") -> str:
+def issue_jwt(subject: str, kind: str = "reseller", role: str = "reseller") -> str:
+    """Issue a JWT.
+    kind = 'reseller' → sub is a Reseller.id
+    kind = 'admin'    → sub is an AdminUser.id
+    `role` is kept for backwards-compat in older tokens."""
     now = datetime.now(timezone.utc)
     payload = {
         "sub": subject,
+        "kind": kind,
         "role": role,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.jwt_expires_minutes)).timestamp()),

@@ -1,13 +1,19 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from .config import settings
-from .db import engine
+from .db import engine, SessionLocal
 from .routers import (
     auth, resellers, products, links, webhooks, chats,
     orders, templates, tracking, admin, billing, dashboard,
 )
+from .services.admin_bootstrap import ensure_sole_admin
+
+
+log = logging.getLogger(__name__)
 
 
 app = FastAPI(
@@ -28,6 +34,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _bootstrap() -> None:
+    """Make sure the sole admin exists. Runs every process start."""
+    db = SessionLocal()
+    try:
+        ensure_sole_admin(db)
+    except Exception:
+        log.exception("admin bootstrap failed")
+    finally:
+        db.close()
 
 
 @app.get("/health", tags=["meta"])

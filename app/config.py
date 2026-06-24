@@ -21,5 +21,10 @@ class Settings(BaseSettings):
 
     wa_verify_token: str = "change-me"
 
+    # Sole admin account. Only this email may sign into the admin portal.
+    # Resellers signing up with this email are rejected.
+    admin_email: str = "arabiadropshipping05@gmail.com"
+    admin_password: str = "admin-change-me"
+
 
 settings = Settings()
