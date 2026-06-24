@@ -250,17 +250,60 @@ def admin_orders(
     db: Session = Depends(get_db),
     reseller_id: Optional[str] = None,
 ):
+    from ..models import Customer
     stmt = select(Order).order_by(Order.created_at.desc()).limit(500)
     if reseller_id:
         stmt = stmt.where(Order.reseller_id == reseller_id)
     rows = db.execute(stmt).scalars().all()
-    return [
-        {
-            "id": o.id, "code": o.code, "reseller_id": o.reseller_id,
-            "customer_id": o.customer_id, "amount": o.amount, "currency": o.currency,
+    out = []
+    for o in rows:
+        cust = db.get(Customer, o.customer_id)
+        reseller = db.get(Reseller, o.reseller_id)
+        out.append({
+            "id": o.id, "code": o.code,
+            "reseller_id": o.reseller_id,
+            "reseller_name": reseller.name if reseller else "?",
+            "customer_id": o.customer_id,
+            "customer_name": cust.name if cust else None,
+            "customer_phone": cust.phone if cust else None,
+            "amount": o.amount, "currency": o.currency,
             "status": o.status, "delivery_status": o.delivery_status,
             "channel": o.channel, "source_platform": o.source_platform,
+            "tracking_number": o.tracking_number,
+            "source": o.source,
             "created_at": o.created_at.isoformat(),
-        }
-        for o in rows
-    ]
+        })
+    return out
+
+
+@router.get("/chats", response_model=List[dict])
+def admin_chats(
+    _: Reseller = Depends(require_admin),
+    db: Session = Depends(get_db),
+    reseller_id: Optional[str] = None,
+):
+    """Cross-reseller chat list — admin can see whose customer each chat belongs to."""
+    from ..models import Chat, Customer
+    stmt = select(Chat).order_by(Chat.updated_at.desc()).limit(500)
+    if reseller_id:
+        stmt = stmt.where(Chat.reseller_id == reseller_id)
+    rows = db.execute(stmt).scalars().all()
+    out = []
+    for c in rows:
+        cust = db.get(Customer, c.customer_id)
+        reseller = db.get(Reseller, c.reseller_id)
+        last = c.messages[-1] if c.messages else None
+        out.append({
+            "id": c.id,
+            "reseller_id": c.reseller_id,
+            "reseller_name": reseller.name if reseller else "?",
+            "customer_id": c.customer_id,
+            "customer_name": cust.name if cust else None,
+            "customer_phone": cust.phone if cust else "",
+            "channel": c.channel,
+            "mode": c.mode,
+            "unread": c.unread,
+            "last_message": last.text if last else None,
+            "last_message_at": last.created_at.isoformat() if last else None,
+        })
+    return out

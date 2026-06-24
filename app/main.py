@@ -6,7 +6,7 @@ from .config import settings
 from .db import engine
 from .routers import (
     auth, resellers, products, links, webhooks, chats,
-    orders, templates, tracking, admin, billing,
+    orders, templates, tracking, admin, billing, dashboard,
 )
 
 
@@ -57,3 +57,4 @@ app.include_router(templates.router)
 app.include_router(tracking.router)
 app.include_router(admin.router)
 app.include_router(billing.router)
+app.include_router(dashboard.router)
