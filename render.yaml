@@ -22,7 +22,11 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
-        value: "gpt-4o-mini"
+        value: "gpt-4o"
+      - key: ADMIN_EMAIL
+        value: "arabiadropshipping05@gmail.com"
+      - key: ADMIN_PASSWORD
+        sync: false
       - key: META_GRAPH_VERSION
         value: "v21.0"
       - key: APP_ENV

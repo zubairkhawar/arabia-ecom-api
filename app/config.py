@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     fernet_key: str
 
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    openai_model: str = "gpt-4o"
 
     meta_graph_version: str = "v21.0"
 
