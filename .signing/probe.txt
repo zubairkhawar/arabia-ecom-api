@@ -1,0 +1,2 @@
+2026-06-24T15:23:12Z
+Verification probe — SSH signing should make this commit show 'Verified' on GitHub.
