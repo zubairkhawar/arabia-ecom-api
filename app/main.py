@@ -22,14 +22,18 @@ app = FastAPI(
     description="WhatsApp + Shopify AI order orchestration backend.",
 )
 
+# Explicit prod origins + a regex that also accepts any *.vercel.app preview
+# deployment (so branch deploys work) and any localhost dev port.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         settings.frontend_base_url,
+        "https://arabia-ecom.vercel.app",
         "http://localhost:3000",
         "http://localhost:3001",
         "http://localhost:4321",
     ],
+    allow_origin_regex=r"^https://([a-z0-9-]+\.)*vercel\.app$|^http://localhost(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
