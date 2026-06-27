@@ -11,28 +11,12 @@ from .template import Template
 from .admin import AdminUser
 from .billing import Plan, Usage
 from .shopify import ShopifyStore
+from .notification import Notification
 
 __all__ = [
-    "Reseller",
-    "AISetting",
-    "MetaConfig",
-    "WhatsAppConfig",
-    "Product",
-    "ProductOption",
-    "ProductVariant",
-    "ProductBundle",
-    "Customer",
-    "Order",
-    "OrderItem",
-    "Chat",
-    "Message",
-    "ClickSession",
-    "AttributionEvent",
-    "PoolNumber",
-    "PoolAssignment",
-    "Template",
-    "AdminUser",
-    "Plan",
-    "Usage",
-    "ShopifyStore",
+    "Reseller", "AISetting", "MetaConfig", "WhatsAppConfig",
+    "Product", "ProductOption", "ProductVariant", "ProductBundle",
+    "Customer", "Order", "OrderItem", "Chat", "Message",
+    "ClickSession", "AttributionEvent", "PoolNumber", "PoolAssignment",
+    "Template", "AdminUser", "Plan", "Usage", "ShopifyStore", "Notification",
 ]

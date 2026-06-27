@@ -9,6 +9,7 @@ from .db import engine, SessionLocal
 from .routers import (
     auth, resellers, products, links, webhooks, chats,
     orders, templates, tracking, admin, billing, dashboard, shopify,
+    notifications,
 )
 from .services.admin_bootstrap import ensure_sole_admin
 
@@ -81,3 +82,4 @@ app.include_router(admin.router)
 app.include_router(billing.router)
 app.include_router(dashboard.router)
 app.include_router(shopify.router)
+app.include_router(notifications.router)

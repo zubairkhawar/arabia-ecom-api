@@ -25,7 +25,11 @@ from ..models import (
     Reseller, Chat, Message, ClickSession, Product, Customer, AISetting,
     WhatsAppConfig, PoolNumber,
 )
-from ..services.ai import build_system_prompt, chat_complete, parse_intent
+from ..services.ai import (
+    build_system_prompt, chat_complete, parse_intent,
+    detect_language, heuristic_wants_human,
+)
+from ..services.notifications import create_notification
 from ..services.orders import find_or_create_customer, create_order_from_items, confirm_order
 from ..services.whatsapp_cloud import send_text
 
@@ -143,12 +147,49 @@ async def _handle_inbound_message(
         chat.click_session_id = click_session_id
 
     # Persist inbound message
+    is_first_message = len(chat.messages) == 0
     db.add(Message(chat_id=chat.id, sender="customer", text=text, wa_message_id=inbound.get("wa_message_id")))
     chat.unread = (chat.unread or 0) + 1
     db.flush()
 
-    # If chat is in human mode, do not auto-reply
-    if chat.mode == "human":
+    # Notification for the reseller
+    create_notification(
+        db,
+        reseller_id=reseller.id,
+        type="new_chat" if is_first_message else "new_message",
+        title=("New chat" if is_first_message else "New message")
+              + f" from {customer.name or phone}",
+        body=text[:200],
+        href=f"/reseller/chats?chat={chat.id}",
+        meta={"chat_id": chat.id, "customer_phone": phone},
+    )
+
+    # Human-handled chats don't auto-reply
+    if chat.mode in ("human", "pending_human"):
+        return
+
+    # Belt-and-braces: catch obvious "real agent" requests across EN/AR/RU
+    # before paying the LLM round-trip — guarantees no customer is trapped.
+    if heuristic_wants_human(text):
+        chat.mode = "pending_human"
+        db.flush()
+        create_notification(
+            db, reseller_id=reseller.id, type="escalation",
+            title=f"{customer.name or phone} wants a real agent",
+            body=text[:200],
+            href=f"/reseller/chats?chat={chat.id}",
+            meta={"chat_id": chat.id, "reason": "keyword"},
+        )
+        lang = detect_language(text)
+        ack = {
+            "english": "Of course! Our team will join in just a moment 🙏",
+            "arabic": "بالتأكيد! فريقنا سينضم خلال لحظات 🙏",
+            "roman_urdu": "Bilkul! Hamara real agent ek minute mein join karega 🙏",
+        }[lang]
+        from ..services.wa_credentials import resolve_send_creds
+        pn_id, token = resolve_send_creds(db, chat)
+        await send_text(pn_id, token, phone, ack)
+        db.add(Message(chat_id=chat.id, sender="ai", text=ack))
         return
 
     # Build AI history (skip the just-added user message; pass it as user_message)
@@ -165,7 +206,8 @@ async def _handle_inbound_message(
         select(AISetting).where(AISetting.reseller_id == reseller.id)
     ).scalar_one_or_none() or AISetting(reseller_id=reseller.id)
 
-    prompt = build_system_prompt(reseller, ai_settings, catalogue)
+    lang = detect_language(text)
+    prompt = build_system_prompt(reseller, ai_settings, catalogue, language=lang)
     raw_reply = await chat_complete(prompt, history, text)
     clean, intent = parse_intent(raw_reply)
 
@@ -193,6 +235,19 @@ async def _execute_intent(
     intent: dict,
 ):
     action = intent.get("action")
+
+    if action == "escalate_to_human":
+        chat.mode = "pending_human"
+        reason = (intent.get("reason") or "AI escalation")[:200]
+        create_notification(
+            db, reseller_id=reseller.id, type="escalation",
+            title=f"{customer.name or chat.wa_thread_id or 'Customer'} needs a real agent",
+            body=reason,
+            href=f"/reseller/chats?chat={chat.id}",
+            meta={"chat_id": chat.id, "reason": reason},
+        )
+        return
+
     if action == "add_item":
         product_id = intent.get("product_id")
         qty = int(intent.get("qty", 1))
@@ -235,6 +290,13 @@ async def _execute_intent(
         )
         await confirm_order(db, reseller, order)
         chat.draft_items = []
+        create_notification(
+            db, reseller_id=reseller.id, type="order_confirmed",
+            title=f"Order {order.code} confirmed — {order.amount} {order.currency}",
+            body=f"{customer.name or chat.wa_thread_id} just placed an order.",
+            href=f"/reseller/orders?order={order.code}",
+            meta={"order_id": order.id, "order_code": order.code, "chat_id": chat.id},
+        )
 
 
 # ---------------- Universal pool webhook ----------------
