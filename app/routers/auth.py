@@ -7,7 +7,7 @@ from ..db import get_db
 from ..deps import get_current_user
 from ..models import Reseller, AISetting, AdminUser
 from ..security import hash_password, verify_password, issue_jwt
-from ..schemas.common import SignupIn, LoginIn, TokenResponse, ResellerOut
+from ..schemas.common import SignupIn, LoginIn, TokenResponse, ResellerOut, PasswordChange
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -92,3 +92,33 @@ def me(current=Depends(get_current_user)):
     if isinstance(current, AdminUser):
         return _admin_as_reseller_out(current)
     return current
+
+
+@router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    payload: PasswordChange,
+    current=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Change the signed-in user's password. Works for resellers and the
+    sole admin alike — looks up the right row via the JWT 'kind' claim.
+
+    The admin password is also driven by the ADMIN_PASSWORD env var on
+    every startup, so changing it here is per-session: the next process
+    restart will reset it back to whatever ADMIN_PASSWORD is set to.
+    For a permanent admin password change, update the env var on Render.
+    """
+    if len(payload.new_password) < 8:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "New password must be at least 8 characters",
+        )
+    if not verify_password(payload.old_password, current.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Current password is incorrect")
+    if verify_password(payload.new_password, current.password_hash):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "New password must differ from the current one",
+        )
+    current.password_hash = hash_password(payload.new_password)
+    db.commit()
