@@ -80,8 +80,9 @@ def change_mode(
     c = db.get(Chat, chat_id)
     if not c or c.reseller_id != current.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "chat not found")
-    if payload.mode not in ("ai", "human"):
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "mode must be 'ai' or 'human'")
+    if payload.mode not in ("ai", "human", "pending_human"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "mode must be 'ai', 'human', or 'pending_human'")
     c.mode = payload.mode
     db.commit()
     return get_chat(chat_id, current, db)
