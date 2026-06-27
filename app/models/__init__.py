@@ -10,6 +10,7 @@ from .pool import PoolNumber, PoolAssignment
 from .template import Template
 from .admin import AdminUser
 from .billing import Plan, Usage
+from .shopify import ShopifyStore
 
 __all__ = [
     "Reseller",
@@ -33,4 +34,5 @@ __all__ = [
     "AdminUser",
     "Plan",
     "Usage",
+    "ShopifyStore",
 ]

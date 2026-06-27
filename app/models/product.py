@@ -23,6 +23,10 @@ class Product(Base, IdMixin, TimestampMixin):
     country: Mapped[str] = mapped_column(String(8), default="UAE")
     channels: Mapped[list] = mapped_column(JSON, default=lambda: ["whatsapp"])
     source: Mapped[str] = mapped_column(String(64), default="manual")
+    shopify_store_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("shopify_stores.id", ondelete="SET NULL"), index=True
+    )
+    shopify_product_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     discount_type: Mapped[Optional[str]] = mapped_column(String(16))  # percent | flat | None
     discount_value: Mapped[Optional[float]] = mapped_column(Float)
     active: Mapped[bool] = mapped_column(Boolean, default=True)

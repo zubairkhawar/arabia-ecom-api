@@ -8,7 +8,7 @@ from .config import settings
 from .db import engine, SessionLocal
 from .routers import (
     auth, resellers, products, links, webhooks, chats,
-    orders, templates, tracking, admin, billing, dashboard,
+    orders, templates, tracking, admin, billing, dashboard, shopify,
 )
 from .services.admin_bootstrap import ensure_sole_admin
 
@@ -80,3 +80,4 @@ app.include_router(tracking.router)
 app.include_router(admin.router)
 app.include_router(billing.router)
 app.include_router(dashboard.router)
+app.include_router(shopify.router)
