@@ -2,7 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import select, func, case
 from sqlalchemy.orm import Session
@@ -114,12 +114,22 @@ def _window(now: datetime, days: int = 7) -> tuple[datetime, datetime, datetime]
     return start, prev_start, prev_end
 
 
-def _empty_chart_for_last_7_days(now: datetime) -> List[SeriesPoint]:
-    days = []
-    for i in range(6, -1, -1):
-        d = now - timedelta(days=i)
-        days.append(SeriesPoint(day=d.strftime("%a"), conversations=0, orders=0))
-    return days
+def _empty_chart(now: datetime, days: int) -> List[SeriesPoint]:
+    """Build an empty time-series with `days` buckets ending at `now`.
+    Bucket size adapts: ≤14d = daily, ≤90d = daily, 365d = weekly."""
+    # For longer ranges we use weekly buckets so we don't return 365 points
+    if days >= 180:
+        weeks = max(1, days // 7)
+        out = []
+        for i in range(weeks - 1, -1, -1):
+            d = now - timedelta(days=i * 7)
+            out.append(SeriesPoint(day=d.strftime("%b %d"), conversations=0, orders=0))
+        return out
+    fmt = "%a" if days <= 14 else "%b %d"
+    return [
+        SeriesPoint(day=(now - timedelta(days=i)).strftime(fmt), conversations=0, orders=0)
+        for i in range(days - 1, -1, -1)
+    ]
 
 
 # ---------------- /me/dashboard ----------------
@@ -129,9 +139,10 @@ def _empty_chart_for_last_7_days(now: datetime) -> List[SeriesPoint]:
 def reseller_dashboard(
     current: Reseller = Depends(get_current_reseller),
     db: Session = Depends(get_db),
+    days: int = Query(7, ge=1, le=365, description="Window size in days"),
 ):
     now = datetime.now(timezone.utc)
-    start, prev_start, prev_end = _window(now, 7)
+    start, prev_start, prev_end = _window(now, days)
 
     # --- stat: conversations (chats created in window) ---
     convo_curr = db.execute(
@@ -202,23 +213,46 @@ def reseller_dashboard(
         },
     }
 
-    # --- 7-day series ---
-    chart = _empty_chart_for_last_7_days(now)
+    # --- time-series for the selected range ---
+    # ONE query per series via date_trunc, then merge into the bucket array.
+    chart = _empty_chart(now, days)
+    bucket_days = 7 if days >= 180 else 1
+    n_buckets = len(chart)
+    series_start = (now - timedelta(days=n_buckets * bucket_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    trunc = "week" if bucket_days == 7 else "day"
+
+    chat_counts = dict(db.execute(
+        select(
+            func.date_trunc(trunc, Chat.created_at).label("b"),
+            func.count(Chat.id),
+        ).where(
+            Chat.reseller_id == current.id, Chat.created_at >= series_start
+        ).group_by("b")
+    ).all())
+    order_counts = dict(db.execute(
+        select(
+            func.date_trunc(trunc, Order.created_at).label("b"),
+            func.count(Order.id),
+        ).where(
+            Order.reseller_id == current.id, Order.created_at >= series_start
+        ).group_by("b")
+    ).all())
+
     for i, p in enumerate(chart):
-        day_start = (now - timedelta(days=6 - i)).replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        p.conversations = db.execute(
-            select(func.count(Chat.id)).where(
-                Chat.reseller_id == current.id,
-                Chat.created_at >= day_start, Chat.created_at < day_end,
-            )
-        ).scalar_one() or 0
-        p.orders = db.execute(
-            select(func.count(Order.id)).where(
-                Order.reseller_id == current.id,
-                Order.created_at >= day_start, Order.created_at < day_end,
-            )
-        ).scalar_one() or 0
+        bucket_end = (now - timedelta(days=(n_buckets - 1 - i) * bucket_days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ) + timedelta(days=bucket_days)
+        bucket_start = bucket_end - timedelta(days=bucket_days)
+        # Postgres date_trunc returns a timestamp aligned to the bucket start.
+        # We need to find that exact timestamp in the dicts.
+        key = bucket_start if bucket_days == 1 else (
+            bucket_start - timedelta(days=bucket_start.weekday())  # week starts Monday
+        )
+        # Try both possible alignments (UTC date_trunc vs computed)
+        p.conversations = int(chat_counts.get(key, chat_counts.get(bucket_start, 0)) or 0)
+        p.orders = int(order_counts.get(key, order_counts.get(bucket_start, 0)) or 0)
 
     # --- order status breakdown ---
     rows = db.execute(
@@ -365,9 +399,10 @@ def reseller_dashboard(
 def admin_stats(
     _: Reseller = Depends(require_admin),
     db: Session = Depends(get_db),
+    days: int = Query(7, ge=1, le=365),
 ):
     now = datetime.now(timezone.utc)
-    start, prev_start, prev_end = _window(now, 7)
+    start, prev_start, prev_end = _window(now, days)
 
     total_resellers_curr = db.execute(select(func.count(Reseller.id))).scalar_one()
     total_resellers_prev = db.execute(

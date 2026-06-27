@@ -182,7 +182,7 @@ def get_wa_config(
 
 
 @router.put("/wa-config", response_model=WhatsAppConfigOut)
-def upsert_wa_config(
+async def upsert_wa_config(
     payload: WhatsAppConfigIn,
     current: Reseller = Depends(get_current_reseller),
     db: Session = Depends(get_db),
@@ -205,7 +205,34 @@ def upsert_wa_config(
             cfg.access_token_enc = encrypt(payload.access_token)
         if payload.webhook_verify_token is not None:
             cfg.webhook_verify_token = payload.webhook_verify_token or None
-        cfg.verified = all([cfg.waba_id, cfg.phone_number_id, cfg.access_token_enc])
+
+        # If all the bits are now in place, verify against Meta Graph API
+        # by trying to read the phone number's metadata. 4xx means the
+        # token is bad, phone_number_id is wrong, or token lacks scopes.
+        if cfg.phone_number_id and cfg.access_token_enc:
+            from ..services.whatsapp_cloud import verify_creds
+            from ..security import decrypt
+            check = await verify_creds(cfg.phone_number_id, decrypt(cfg.access_token_enc))
+            if not check["ok"]:
+                # Roll back the credential change so the user can fix and retry
+                db.rollback()
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Meta rejected the credentials (HTTP {check['status']}). "
+                    f"Check the Phone Number ID + Access Token. Meta said: {check['body'][:200]}",
+                )
+            cfg.verified = True
+            # If display number wasn't supplied but Meta returned one, use it
+            if not cfg.display_phone_number:
+                import json as _json
+                try:
+                    body = _json.loads(check["body"])
+                    if body.get("display_phone_number"):
+                        cfg.display_phone_number = body["display_phone_number"]
+                except Exception:
+                    pass
+        else:
+            cfg.verified = False
     else:
         # universal — auto-assign pool number on first save (handled in pool router on demand)
         cfg.verified = True

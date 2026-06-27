@@ -1,5 +1,6 @@
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, case
@@ -49,11 +50,13 @@ PLATFORMS = ["tiktok", "meta", "snapchat", "google", "other"]
 def overview(
     current: Reseller = Depends(get_current_reseller),
     db: Session = Depends(get_db),
+    days: int = Query(7, ge=1, le=365),
 ):
+    since = datetime.now(timezone.utc) - timedelta(days=days)
     # platform clicks
     clicks_rows = db.execute(
         select(ClickSession.src_platform, func.count(ClickSession.id))
-        .where(ClickSession.reseller_id == current.id)
+        .where(ClickSession.reseller_id == current.id, ClickSession.created_at >= since)
         .group_by(ClickSession.src_platform)
     ).all()
     clicks_map = {p: 0 for p in PLATFORMS}
@@ -68,7 +71,7 @@ def overview(
             func.sum(case((Order.delivery_status == "delivered", 1), else_=0)),
             func.sum(case((Order.delivery_status == "returned", 1), else_=0)),
         )
-        .where(Order.reseller_id == current.id)
+        .where(Order.reseller_id == current.id, Order.created_at >= since)
         .group_by(Order.source_platform)
     ).all()
     orders_map = {p: {"orders": 0, "delivered": 0, "returned": 0} for p in PLATFORMS}

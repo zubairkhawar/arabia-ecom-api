@@ -20,6 +20,27 @@ log = logging.getLogger(__name__)
 GRAPH = f"https://graph.facebook.com/{settings.meta_graph_version}"
 
 
+async def verify_creds(
+    phone_number_id: str,
+    access_token: str,
+) -> Dict[str, Any]:
+    """Test that the access token can read the phone number's metadata.
+    GET https://graph.facebook.com/{ver}/{phone_number_id} → 200 with
+    display number / verified name on success, 4xx on failure."""
+    url = f"{GRAPH}/{phone_number_id}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"fields": "id,display_phone_number,verified_name,quality_rating"},
+            )
+            ok = 200 <= r.status_code < 300
+            return {"ok": ok, "status": r.status_code, "body": r.text[:800]}
+    except httpx.RequestError as e:
+        return {"ok": False, "status": 0, "body": f"network error: {e}"}
+
+
 async def send_text(
     phone_number_id: Optional[str],
     access_token_enc: Optional[str],
