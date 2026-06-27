@@ -23,7 +23,7 @@ from ..db import get_db
 from ..config import settings
 from ..models import (
     Reseller, Chat, Message, ClickSession, Product, Customer, AISetting,
-    WhatsAppConfig,
+    WhatsAppConfig, PoolNumber,
 )
 from ..services.ai import build_system_prompt, chat_complete, parse_intent
 from ..services.orders import find_or_create_customer, create_order_from_items, confirm_order
@@ -176,11 +176,12 @@ async def _handle_inbound_message(
         except Exception as e:
             log.exception("intent execution failed: %s", e)
 
-    # Send reply over WhatsApp (or dev stub)
-    pn_id = wa_cfg.phone_number_id if wa_cfg else None
-    token = wa_cfg.access_token_enc if wa_cfg else None
+    # Send reply over WhatsApp using the right credentials —
+    # universal pool creds if the chat came via pool, else reseller's own.
+    from ..services.wa_credentials import resolve_send_creds
+    pn_id, token = resolve_send_creds(db, chat)
     if clean:
-        send_result = await send_text(pn_id, token, phone, clean)
+        await send_text(pn_id, token, phone, clean)
         db.add(Message(chat_id=chat.id, sender="ai", text=clean))
 
 
@@ -234,3 +235,96 @@ async def _execute_intent(
         )
         await confirm_order(db, reseller, order)
         chat.draft_items = []
+
+
+# ---------------- Universal pool webhook ----------------
+# One physical WhatsApp number serves up to 50 resellers. Meta sends
+# all inbound for that number to a single URL: /webhooks/wa/pool/{pool_id}.
+# We figure out which reseller each message belongs to via the
+# [ref:c_xxx] token in the message body (matched to a ClickSession).
+# Messages without a ref token get a fallback nudge.
+
+
+@router.get("/wa/pool/{pool_number_id}")
+def wa_pool_verify(
+    pool_number_id: str,
+    hub_mode: str = Query(alias="hub.mode", default=""),
+    hub_verify_token: str = Query(alias="hub.verify_token", default=""),
+    hub_challenge: str = Query(alias="hub.challenge", default=""),
+    db: Session = Depends(get_db),
+):
+    if hub_mode != "subscribe":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "expected mode=subscribe")
+    pool = db.get(PoolNumber, pool_number_id)
+    if not pool:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pool number not found")
+    # Single global verify token for pool numbers (settings.wa_verify_token)
+    if hub_verify_token != settings.wa_verify_token:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "bad verify token")
+    return Response(content=hub_challenge, media_type="text/plain")
+
+
+@router.post("/wa/pool/{pool_number_id}")
+async def wa_pool_inbound(pool_number_id: str, request: Request, db: Session = Depends(get_db)):
+    payload = await request.json()
+    pool = db.get(PoolNumber, pool_number_id)
+    if not pool:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "pool number not found")
+
+    msgs = []
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            for m in value.get("messages", []) or []:
+                if m.get("type") != "text":
+                    continue
+                msgs.append({
+                    "wa_message_id": m.get("id"),
+                    "from": m.get("from"),
+                    "text": m.get("text", {}).get("body", ""),
+                    "profile_name": (value.get("contacts", [{}])[0]
+                                     .get("profile", {}).get("name") if value.get("contacts") else None),
+                })
+
+    if not msgs:
+        return {"ok": True, "processed": 0}
+
+    processed = 0
+    unattributed = 0
+    for inbound in msgs:
+        text = inbound.get("text") or ""
+        ref = REF_RE.search(text)
+        if not ref:
+            # Customer messaged the pool number without a ref token —
+            # could happen if they save the number from a previous chat.
+            # Send a friendly nudge and skip.
+            await send_text(
+                pool.phone_number_id,
+                pool.access_token_enc,
+                inbound["from"],
+                "Hi! Please tap the product link you saw in our ad to start a chat — that's how we know which store you're messaging about.",
+            )
+            unattributed += 1
+            continue
+
+        click = db.execute(
+            select(ClickSession).where(ClickSession.ref_token == ref.group(1))
+        ).scalar_one_or_none()
+        if not click:
+            unattributed += 1
+            continue
+
+        reseller = db.get(Reseller, click.reseller_id)
+        if not reseller:
+            unattributed += 1
+            continue
+
+        # Reuse the same handler as own-number — but pass wa_cfg=None
+        # because resolve_send_creds will see chat.click_session_id and
+        # route outbound via the pool's WABA creds.
+        await _handle_inbound_message(db, reseller, None, inbound)
+        processed += 1
+
+    db.commit()
+    return {"ok": True, "processed": processed, "unattributed": unattributed}
+

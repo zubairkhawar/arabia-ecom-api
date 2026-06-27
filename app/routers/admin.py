@@ -107,11 +107,23 @@ def list_pool_numbers(
 
 
 @router.post("/pool-numbers", response_model=PoolNumberOut, status_code=status.HTTP_201_CREATED)
-def create_pool_number(
+async def create_pool_number(
     payload: PoolNumberIn,
-    _: Reseller = Depends(require_admin),
+    _: AdminUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    # If Meta credentials were provided, verify them BEFORE persisting so
+    # the admin gets immediate feedback that the pool number actually works.
+    if payload.access_token and payload.phone_number_id:
+        from ..services.whatsapp_cloud import verify_creds
+        check = await verify_creds(payload.phone_number_id, payload.access_token)
+        if not check["ok"]:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Meta rejected the pool credentials (HTTP {check['status']}). "
+                f"Meta said: {check['body'][:200]}",
+            )
+
     n = PoolNumber(
         number=payload.number,
         country=payload.country,

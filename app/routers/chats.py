@@ -99,16 +99,10 @@ async def human_reply(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "chat not found")
     if c.mode != "human":
         raise HTTPException(status.HTTP_409_CONFLICT, "Chat is not in human mode")
-    cfg = db.execute(
-        select(WhatsAppConfig).where(WhatsAppConfig.reseller_id == current.id)
-    ).scalar_one_or_none()
+    from ..services.wa_credentials import resolve_send_creds
+    pn_id, token = resolve_send_creds(db, c)
     cust = db.get(Customer, c.customer_id)
-    result = await send_text(
-        cfg.phone_number_id if cfg else None,
-        cfg.access_token_enc if cfg else None,
-        cust.phone if cust else "",
-        payload.text,
-    )
+    result = await send_text(pn_id, token, cust.phone if cust else "", payload.text)
     db.add(Message(chat_id=c.id, sender="human", text=payload.text))
     db.commit()
     return {"ok": True, "wa_result": result}
