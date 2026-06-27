@@ -315,3 +315,100 @@ def admin_chats(
             "last_message_at": last.created_at.isoformat() if last else None,
         })
     return out
+
+
+# ---------- platform settings (singleton) ----------
+
+from pydantic import BaseModel
+from ..models import PlatformSettings
+
+
+def _get_or_create_settings(db: Session) -> PlatformSettings:
+    s = db.execute(select(PlatformSettings).limit(1)).scalar_one_or_none()
+    if not s:
+        s = PlatformSettings()
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+    return s
+
+
+class PlatformSettingsIn(BaseModel):
+    platform_name: Optional[str] = None
+    support_email: Optional[str] = None
+    support_phone: Optional[str] = None
+    default_ai_name: Optional[str] = None
+    default_ai_tone: Optional[str] = None
+    default_response_length: Optional[str] = None
+    default_opening_message: Optional[str] = None
+    starter_chats_cap: Optional[int] = None
+    growth_chats_cap: Optional[int] = None
+    scale_chats_cap: Optional[int] = None
+    pool_capacity_per_number: Optional[int] = None
+    auto_escalate_after_msgs: Optional[int] = None
+    ai_typing_delay_ms: Optional[int] = None
+    wa_setup_video_url: Optional[str] = None
+    shopify_setup_video_url: Optional[str] = None
+    ai_training_video_url: Optional[str] = None
+
+
+class PlatformSettingsOut(BaseModel):
+    platform_name: str
+    support_email: Optional[str]
+    support_phone: Optional[str]
+    default_ai_name: str
+    default_ai_tone: str
+    default_response_length: str
+    default_opening_message: Optional[str]
+    starter_chats_cap: int
+    growth_chats_cap: int
+    scale_chats_cap: Optional[int]
+    pool_capacity_per_number: int
+    auto_escalate_after_msgs: int
+    ai_typing_delay_ms: int
+    wa_setup_video_url: Optional[str]
+    shopify_setup_video_url: Optional[str]
+    ai_training_video_url: Optional[str]
+
+
+def _serialize_settings(s: PlatformSettings) -> PlatformSettingsOut:
+    return PlatformSettingsOut(
+        platform_name=s.platform_name,
+        support_email=s.support_email,
+        support_phone=s.support_phone,
+        default_ai_name=s.default_ai_name,
+        default_ai_tone=s.default_ai_tone,
+        default_response_length=s.default_response_length,
+        default_opening_message=s.default_opening_message,
+        starter_chats_cap=s.starter_chats_cap,
+        growth_chats_cap=s.growth_chats_cap,
+        scale_chats_cap=s.scale_chats_cap,
+        pool_capacity_per_number=s.pool_capacity_per_number,
+        auto_escalate_after_msgs=s.auto_escalate_after_msgs,
+        ai_typing_delay_ms=s.ai_typing_delay_ms,
+        wa_setup_video_url=s.wa_setup_video_url,
+        shopify_setup_video_url=s.shopify_setup_video_url,
+        ai_training_video_url=s.ai_training_video_url,
+    )
+
+
+@router.get("/platform-settings", response_model=PlatformSettingsOut)
+def get_platform_settings(
+    _: AdminUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _serialize_settings(_get_or_create_settings(db))
+
+
+@router.put("/platform-settings", response_model=PlatformSettingsOut)
+def update_platform_settings(
+    payload: PlatformSettingsIn,
+    _: AdminUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    s = _get_or_create_settings(db)
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(s, k, v)
+    db.commit()
+    db.refresh(s)
+    return _serialize_settings(s)

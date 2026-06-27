@@ -12,6 +12,7 @@ from .admin import AdminUser
 from .billing import Plan, Usage
 from .shopify import ShopifyStore
 from .notification import Notification
+from .platform_settings import PlatformSettings
 
 __all__ = [
     "Reseller", "AISetting", "MetaConfig", "WhatsAppConfig",
@@ -19,4 +20,5 @@ __all__ = [
     "Customer", "Order", "OrderItem", "Chat", "Message",
     "ClickSession", "AttributionEvent", "PoolNumber", "PoolAssignment",
     "Template", "AdminUser", "Plan", "Usage", "ShopifyStore", "Notification",
+    "PlatformSettings",
 ]
