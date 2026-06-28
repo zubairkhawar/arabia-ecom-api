@@ -111,3 +111,7 @@ class WhatsAppConfigOut(BaseModel):
     display_phone_number: Optional[str]
     has_token: bool
     verified: bool
+    # When number_type='universal' and a pool slot is assigned, surface
+    # which pool number the reseller is on so the UI can show it.
+    assigned_pool_number: Optional[str] = None
+    assigned_pool_country: Optional[str] = None

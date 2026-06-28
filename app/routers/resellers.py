@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -160,17 +161,27 @@ def delete_meta_config(
 
 # ---------- WhatsApp config ----------
 
-@router.get("/wa-config", response_model=WhatsAppConfigOut)
-def get_wa_config(
-    current: Reseller = Depends(get_current_reseller),
-    db: Session = Depends(get_db),
-):
-    cfg = db.execute(select(WhatsAppConfig).where(WhatsAppConfig.reseller_id == current.id)).scalar_one_or_none()
+
+def _serialize_wa(db: Session, current: Reseller, cfg: Optional[WhatsAppConfig]) -> WhatsAppConfigOut:
+    """Serialize the WhatsApp config + lazily look up the assigned pool
+    number when number_type='universal'."""
     if not cfg:
         return WhatsAppConfigOut(
             number_type="own", waba_id=None, phone_number_id=None,
             display_phone_number=None, has_token=False, verified=False,
         )
+    pool_number = None
+    pool_country = None
+    if cfg.number_type == "universal":
+        from ..models import PoolAssignment, PoolNumber
+        assign = db.execute(
+            select(PoolAssignment).where(PoolAssignment.reseller_id == current.id)
+        ).scalar_one_or_none()
+        if assign:
+            pn = db.get(PoolNumber, assign.pool_number_id)
+            if pn:
+                pool_number = pn.number
+                pool_country = pn.country
     return WhatsAppConfigOut(
         number_type=cfg.number_type,
         waba_id=cfg.waba_id,
@@ -178,7 +189,38 @@ def get_wa_config(
         display_phone_number=cfg.display_phone_number,
         has_token=bool(cfg.access_token_enc),
         verified=cfg.verified,
+        assigned_pool_number=pool_number,
+        assigned_pool_country=pool_country,
     )
+
+
+def _release_pool_assignment(db: Session, reseller_id: str) -> None:
+    """When a reseller disconnects from the universal pool (or switches
+    to own number), free their pool slot and decrement the counter."""
+    from ..models import PoolAssignment, PoolNumber
+    a = db.execute(
+        select(PoolAssignment).where(PoolAssignment.reseller_id == reseller_id)
+    ).scalar_one_or_none()
+    if not a:
+        return
+    pn = db.get(PoolNumber, a.pool_number_id)
+    if pn and (pn.assigned or 0) > 0:
+        pn.assigned -= 1
+        if pn.status == "full":
+            pn.status = "active"
+    db.delete(a)
+    db.flush()
+
+
+@router.get("/wa-config", response_model=WhatsAppConfigOut)
+def get_wa_config(
+    current: Reseller = Depends(get_current_reseller),
+    db: Session = Depends(get_db),
+):
+    cfg = db.execute(
+        select(WhatsAppConfig).where(WhatsAppConfig.reseller_id == current.id)
+    ).scalar_one_or_none()
+    return _serialize_wa(db, current, cfg)
 
 
 @router.put("/wa-config", response_model=WhatsAppConfigOut)
@@ -187,14 +229,26 @@ async def upsert_wa_config(
     current: Reseller = Depends(get_current_reseller),
     db: Session = Depends(get_db),
 ):
+    """Connect a WhatsApp number. Only ONE mode at a time:
+      - 'own': clears any prior pool assignment
+      - 'universal': clears any prior own-number creds
+    If the reseller is already configured with a different mode, the
+    previous setup is wiped on save.
+    """
     if payload.number_type not in ("own", "universal"):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "number_type must be 'own' or 'universal'")
-    cfg = db.execute(select(WhatsAppConfig).where(WhatsAppConfig.reseller_id == current.id)).scalar_one_or_none()
+    cfg = db.execute(
+        select(WhatsAppConfig).where(WhatsAppConfig.reseller_id == current.id)
+    ).scalar_one_or_none()
     if not cfg:
         cfg = WhatsAppConfig(reseller_id=current.id)
         db.add(cfg)
     cfg.number_type = payload.number_type
+
     if payload.number_type == "own":
+        # Switching to own → release any pool slot we held
+        _release_pool_assignment(db, current.id)
+
         if payload.waba_id is not None:
             cfg.waba_id = payload.waba_id
         if payload.phone_number_id is not None:
@@ -206,15 +260,11 @@ async def upsert_wa_config(
         if payload.webhook_verify_token is not None:
             cfg.webhook_verify_token = payload.webhook_verify_token or None
 
-        # If all the bits are now in place, verify against Meta Graph API
-        # by trying to read the phone number's metadata. 4xx means the
-        # token is bad, phone_number_id is wrong, or token lacks scopes.
         if cfg.phone_number_id and cfg.access_token_enc:
             from ..services.whatsapp_cloud import verify_creds
             from ..security import decrypt
             check = await verify_creds(cfg.phone_number_id, decrypt(cfg.access_token_enc))
             if not check["ok"]:
-                # Roll back the credential change so the user can fix and retry
                 db.rollback()
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
@@ -222,7 +272,6 @@ async def upsert_wa_config(
                     f"Check the Phone Number ID + Access Token. Meta said: {check['body'][:200]}",
                 )
             cfg.verified = True
-            # If display number wasn't supplied but Meta returned one, use it
             if not cfg.display_phone_number:
                 import json as _json
                 try:
@@ -234,15 +283,32 @@ async def upsert_wa_config(
         else:
             cfg.verified = False
     else:
-        # universal — auto-assign pool number on first save (handled in pool router on demand)
+        # Universal — wipe any own-number creds the reseller previously had
+        cfg.waba_id = None
+        cfg.phone_number_id = None
+        cfg.display_phone_number = None
+        cfg.access_token_enc = None
+        cfg.webhook_verify_token = None
         cfg.verified = True
     db.commit()
     db.refresh(cfg)
-    return WhatsAppConfigOut(
-        number_type=cfg.number_type,
-        waba_id=cfg.waba_id,
-        phone_number_id=cfg.phone_number_id,
-        display_phone_number=cfg.display_phone_number,
-        has_token=bool(cfg.access_token_enc),
-        verified=cfg.verified,
-    )
+    return _serialize_wa(db, current, cfg)
+
+
+@router.delete("/wa-config", status_code=status.HTTP_204_NO_CONTENT)
+def disconnect_wa(
+    current: Reseller = Depends(get_current_reseller),
+    db: Session = Depends(get_db),
+):
+    """Disconnect any WhatsApp setup the reseller has.
+    - Universal: releases their pool slot (decrements PoolNumber.assigned).
+    - Own: wipes credentials.
+    After this they're back to step-1 of the wizard.
+    """
+    _release_pool_assignment(db, current.id)
+    cfg = db.execute(
+        select(WhatsAppConfig).where(WhatsAppConfig.reseller_id == current.id)
+    ).scalar_one_or_none()
+    if cfg:
+        db.delete(cfg)
+        db.commit()
