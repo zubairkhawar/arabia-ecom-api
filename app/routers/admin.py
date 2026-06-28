@@ -412,3 +412,111 @@ def update_platform_settings(
     db.commit()
     db.refresh(s)
     return _serialize_settings(s)
+
+
+# ---------- demo / test-data cleanup ----------
+
+
+class CleanupReport(BaseModel):
+    pool_numbers_deleted: int
+    pool_counters_reconciled: int
+    test_resellers_deleted: int
+    demo_reseller_deleted: bool
+    orphan_notifications_deleted: int
+
+
+@router.post("/cleanup-demo-data", response_model=CleanupReport)
+def cleanup_demo_data(
+    _: AdminUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Strip out leftover seed + automated-test artifacts:
+      1. Pool numbers without a real Meta WABA token (seed placeholders).
+      2. Reconcile PoolNumber.assigned with actual PoolAssignment counts.
+      3. Resellers whose emails match test patterns (flow+*, smoke+*,
+         test+*, prod-smoke+*, e2e+*).
+      4. The seeded demo reseller (demo@arabia-ai.com).
+      5. Orphan notifications that point at a reseller no longer present.
+
+    Hard-deletes via services.cleanup.hard_delete_reseller (FK-safe).
+    Idempotent — re-running on a clean DB returns all zeros.
+    """
+    from ..models import PoolNumber, PoolAssignment, Notification
+    from ..services.cleanup import hard_delete_reseller
+
+    # 1. Drop pool numbers that were never configured with real WABA creds.
+    placeholders = db.execute(
+        select(PoolNumber).where(PoolNumber.access_token_enc.is_(None))
+    ).scalars().all()
+    pool_deleted = 0
+    for n in placeholders:
+        # Also delete any stale assignments that pointed at this number
+        db.execute(
+            PoolAssignment.__table__.delete().where(PoolAssignment.pool_number_id == n.id)
+        )
+        db.delete(n)
+        pool_deleted += 1
+    db.flush()
+
+    # 2. Reconcile assigned counter on remaining pool numbers from actual
+    #    PoolAssignment rows. Past tests left ghost counters.
+    remaining = db.execute(select(PoolNumber)).scalars().all()
+    reconciled = 0
+    for n in remaining:
+        real = db.execute(
+            select(func.count(PoolAssignment.id))
+            .where(PoolAssignment.pool_number_id == n.id)
+        ).scalar_one()
+        if n.assigned != real:
+            n.assigned = real
+            n.status = "full" if real >= n.capacity else "active"
+            reconciled += 1
+
+    # 3. Test resellers — pattern match
+    from sqlalchemy import or_
+    test_emails = db.execute(
+        select(Reseller).where(or_(
+            Reseller.email.like("flow+%"),
+            Reseller.email.like("smoke+%"),
+            Reseller.email.like("test+%"),
+            Reseller.email.like("prod-smoke+%"),
+            Reseller.email.like("e2e+%"),
+            Reseller.email.like("%@example.com"),
+            Reseller.email.like("%@example.test"),
+        ))
+    ).scalars().all()
+    test_deleted = 0
+    for r in test_emails:
+        hard_delete_reseller(db, r.id)
+        test_deleted += 1
+
+    # 4. Seeded demo reseller — the user wants the dashboard to reflect
+    #    real state, not demo
+    demo = db.execute(
+        select(Reseller).where(Reseller.email == "demo@arabia-ai.com")
+    ).scalar_one_or_none()
+    demo_deleted = False
+    if demo:
+        hard_delete_reseller(db, demo.id)
+        demo_deleted = True
+
+    # 5. Orphan notifications (their reseller is now gone — CASCADE handles
+    #    this but if any rows linger, drop them)
+    valid_ids = {r[0] for r in db.execute(select(Reseller.id)).all()}
+    orphan_notifs = 0
+    if valid_ids:
+        bad = db.execute(
+            select(Notification).where(~Notification.reseller_id.in_(valid_ids))
+        ).scalars().all()
+        for n in bad:
+            db.delete(n)
+            orphan_notifs += 1
+
+    db.commit()
+    return CleanupReport(
+        pool_numbers_deleted=pool_deleted,
+        pool_counters_reconciled=reconciled,
+        test_resellers_deleted=test_deleted,
+        demo_reseller_deleted=demo_deleted,
+        orphan_notifications_deleted=orphan_notifs,
+    )
