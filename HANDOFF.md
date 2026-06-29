@@ -420,7 +420,43 @@ alembic upgrade head
 
 ---
 
-## 14 · Communication
+## 14 · Claude Code session parity
+
+The previous engineer worked this codebase with Claude Code (Anthropic's official CLI). To get an identical session experience:
+
+### Install + model
+1. Install Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (or via the desktop app at `claude.ai/code`).
+2. Authenticate with an Anthropic account that has access to **Claude Opus 4.7 (1M context)** — the model used in this project. The 1M context window matters here because the project spans two repos.
+3. Run `claude` from inside `arabia-ecom-api/` for backend work, or from `ai-order-portal/` for frontend work.
+
+### Auto-loaded project context
+Both repos already contain a `CLAUDE.md` at the root. Claude Code loads it automatically at session start, so your colleague will get the same:
+- Architecture summary
+- Pointer to **this file** (`HANDOFF.md`) as the single source of truth
+- The "don't do these" rules (don't rotate FERNET_KEY, don't drop `_enc` columns, etc.)
+
+No additional setup is needed — `CLAUDE.md` is committed.
+
+### Personal memory (not shared)
+Claude Code's `/memory` system is per-user, stored at `~/.claude/projects/<repo-hash>/memory/`. It can't be cloned between machines and shouldn't be — it accumulates personal context (your role, your editing preferences, feedback you've given). Your colleague's memory will build up naturally as they work.
+
+The **project facts** that previously lived in Zubair's memory (architecture, file paths, prod URLs, attribution flow, gotchas) are all in **`HANDOFF.md`** and the two `CLAUDE.md` files. Memory was never the source of truth for project facts.
+
+### Workflow conventions to keep
+- **Conventional commit messages** (look at `git log --oneline -20` for the style — sentence-case subject, focused on the *why* in the body)
+- **Two repos = two commits.** Don't bundle a backend + portal change into one repo's commit; split it.
+- **Push to `main` deploys to prod.** No staging environment. So: small commits, frequent pushes, and test locally first.
+- **No `--no-verify` ever.** Hooks exist for a reason; fix the underlying issue.
+
+### Tools the previous engineer used in-session
+- Manual DB inspection via `python` REPL with `from app.db import SessionLocal` (recipes in §11)
+- Meta API testing via inline `httpx` scripts (also in §11)
+- Render Logs tab (live tail, filterable by request path) for prod debugging
+- Vercel Runtime Logs for portal-side issues
+
+---
+
+## 15 · Communication
 
 - **Slack**: ask Zubair for the workspace invite.
 - **Linear/Issues**: not yet wired — Safdar prefers WhatsApp screenshots, which is hilariously on-brand. Zubair maintains a private notion doc with the backlog.
