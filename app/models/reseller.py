@@ -30,6 +30,7 @@ class AISetting(Base, IdMixin, TimestampMixin):
         String(32), ForeignKey("resellers.id", ondelete="CASCADE"), unique=True
     )
     ai_name: Mapped[str] = mapped_column(String(64), default="Max")
+    opening_message: Mapped[Optional[str]] = mapped_column(Text)
     role: Mapped[str] = mapped_column(Text, default="Friendly sales assistant")
     tone: Mapped[str] = mapped_column(String(32), default="Friendly")
     creativity: Mapped[int] = mapped_column(Integer, default=65)

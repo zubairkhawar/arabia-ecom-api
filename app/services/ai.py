@@ -130,11 +130,19 @@ def build_system_prompt(
         if ai.convince_hesitant else ""
     )
 
+    opener = (ai.opening_message or "").strip()
+    greeting_block = (
+        f"FIRST-CONTACT GREETING (use VERBATIM, translated into the customer's language, for the very first reply only): \"{opener}\"\n"
+        if opener else ""
+    )
+
     return f"""You are {name}, a {persona} WhatsApp sales agent for {reseller.name}.
 
 LANGUAGE: {lang_rule}
 - Detect the customer's language each message: English, Arabic, or Roman Urdu.
 - Always reply in the SAME language the customer just used. Never mix.
+
+{greeting_block}
 
 CATALOGUE (id | name | price | key_points | variants | bundles):
 {_catalog_block(catalogue)}

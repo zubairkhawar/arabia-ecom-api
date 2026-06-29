@@ -48,31 +48,15 @@ TokenResponse.model_rebuild()
 
 class AISettingsOut(ORMModel):
     ai_name: str
-    role: str
-    tone: str
-    creativity: int
+    opening_message: Optional[str] = None
     response_length: str
-    primary_language: str
-    supported_languages: List[str]
-    always_sound_human: bool
-    upsell_aggressiveness: int
-    convince_hesitant: bool
-    fallback_to_human: bool
     business_hours: Optional[List[Any]] = []
 
 
 class AISettingsUpdate(BaseModel):
     ai_name: Optional[str] = None
-    role: Optional[str] = None
-    tone: Optional[str] = None
-    creativity: Optional[int] = None
+    opening_message: Optional[str] = None
     response_length: Optional[str] = None
-    primary_language: Optional[str] = None
-    supported_languages: Optional[List[str]] = None
-    always_sound_human: Optional[bool] = None
-    upsell_aggressiveness: Optional[int] = None
-    convince_hesitant: Optional[bool] = None
-    fallback_to_human: Optional[bool] = None
     business_hours: Optional[List[Any]] = None
 
 

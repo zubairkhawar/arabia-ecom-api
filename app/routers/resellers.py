@@ -290,6 +290,17 @@ async def upsert_wa_config(
         cfg.access_token_enc = None
         cfg.webhook_verify_token = None
         cfg.verified = True
+        # Eagerly assign a pool number so the reseller sees their number
+        # immediately on connect instead of "after first link click".
+        db.flush()
+        from ..services.pool_router import get_or_assign
+        assigned = get_or_assign(db, current)
+        if not assigned:
+            db.rollback()
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"No pool number available for {current.country} right now. Please contact support.",
+            )
     db.commit()
     db.refresh(cfg)
     return _serialize_wa(db, current, cfg)

@@ -5,7 +5,7 @@ from sqlalchemy import select
 from ..config import settings
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import Reseller, AISetting, AdminUser
+from ..models import Reseller, AISetting, AdminUser, PlatformSettings
 from ..security import hash_password, verify_password, issue_jwt
 from ..schemas.common import SignupIn, LoginIn, TokenResponse, ResellerOut, PasswordChange
 
@@ -48,7 +48,16 @@ def signup(payload: SignupIn, db: Session = Depends(get_db)):
     )
     db.add(r)
     db.flush()
-    db.add(AISetting(reseller_id=r.id))
+    ps = db.execute(select(PlatformSettings)).scalar_one_or_none()
+    opening = (ps.default_opening_message if ps else None) or "Hi! Welcome to {{brand}} 👋 How can I help?"
+    opening = opening.replace("{{brand}}", r.name)
+    db.add(AISetting(
+        reseller_id=r.id,
+        ai_name=(ps.default_ai_name if ps else "Max"),
+        tone=(ps.default_ai_tone if ps else "Friendly"),
+        response_length=(ps.default_response_length if ps else "Medium"),
+        opening_message=opening,
+    ))
     db.commit()
     db.refresh(r)
     return TokenResponse(
