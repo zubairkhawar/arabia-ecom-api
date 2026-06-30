@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, case
 
+from ..config import settings
 from ..db import get_db
 from ..deps import get_current_reseller
 from ..models import Reseller, ClickSession, Order, Product
@@ -167,4 +168,171 @@ def overview(
         overall_return_rate=round(overall_ret, 2),
         by_platform=by_platform,
         by_product_platform=by_product,
+    )
+
+
+class LinkSourceBreakdown(BaseModel):
+    platform: str
+    clicks: int
+    orders: int
+
+
+class LinkRow(BaseModel):
+    product_id: str
+    product_name: str
+    slug: str
+    generated_url: str
+    image_url: Optional[str]
+    clicks: int
+    orders: int
+    delivered: int
+    returned: int
+    conversion_rate: float
+    delivery_rate: float
+    by_source: List[LinkSourceBreakdown]
+
+
+class TrackingLinksOut(BaseModel):
+    rows: List[LinkRow]
+    window_days: int
+    total_clicks: int
+    total_orders: int
+    total_delivered: int
+    total_returned: int
+    total_orders_unattributed: int
+
+
+@router.get("/links", response_model=TrackingLinksOut)
+def links(
+    current: Reseller = Depends(get_current_reseller),
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=365),
+):
+    """Per-link performance: one row per product, aggregated by the
+    ClickSession the order was attributed to (strict — orders without
+    click_session_id are excluded from rows and surfaced separately as
+    total_orders_unattributed)."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Click counts per (product, platform) — source of truth for clicks.
+    click_rows = db.execute(
+        select(
+            ClickSession.product_id,
+            ClickSession.src_platform,
+            func.count(ClickSession.id),
+        )
+        .where(
+            ClickSession.reseller_id == current.id,
+            ClickSession.created_at >= since,
+        )
+        .group_by(ClickSession.product_id, ClickSession.src_platform)
+    ).all()
+
+    # Attributed orders per (link-product, platform). Strict join via
+    # Order.click_session_id; orders without a click are excluded here and
+    # counted separately below. We group by ClickSession.product_id (the link
+    # clicked), NOT OrderItem.product_id — link performance measures
+    # click-intent, not basket contents.
+    order_rows = db.execute(
+        select(
+            ClickSession.product_id,
+            ClickSession.src_platform,
+            func.count(Order.id),
+            func.sum(case((Order.delivery_status == "delivered", 1), else_=0)),
+            func.sum(case((Order.delivery_status == "returned", 1), else_=0)),
+        )
+        .join(ClickSession, ClickSession.id == Order.click_session_id)
+        .where(
+            Order.reseller_id == current.id,
+            Order.created_at >= since,
+        )
+        .group_by(ClickSession.product_id, ClickSession.src_platform)
+    ).all()
+
+    # Orders we couldn't attribute to any link — surfaced in the header
+    # so resellers can see the gap rather than have it silently dropped.
+    total_orders_unattributed = db.execute(
+        select(func.count(Order.id)).where(
+            Order.reseller_id == current.id,
+            Order.created_at >= since,
+            Order.click_session_id.is_(None),
+        )
+    ).scalar_one()
+
+    # Fold into a nested map: pid -> { platform -> {clicks, orders, delivered, returned} }
+    by_pid_platform: dict[str, dict[str, dict[str, int]]] = {}
+
+    def _bucket(pid: str, plat: str) -> dict[str, int]:
+        return by_pid_platform.setdefault(pid, {}).setdefault(
+            plat, {"clicks": 0, "orders": 0, "delivered": 0, "returned": 0}
+        )
+
+    for pid, plat, n in click_rows:
+        _bucket(pid, plat or "other")["clicks"] = n or 0
+
+    for pid, plat, n, d, r in order_rows:
+        b = _bucket(pid, plat or "other")
+        b["orders"] = n or 0
+        b["delivered"] = int(d or 0)
+        b["returned"] = int(r or 0)
+
+    # Resolve product metadata for the products that appeared in either
+    # query; missing products (deleted/inactive) get filtered out.
+    pids = list(by_pid_platform.keys())
+    products: dict[str, Product] = {}
+    if pids:
+        prows = db.execute(
+            select(Product).where(
+                Product.id.in_(pids), Product.reseller_id == current.id
+            )
+        ).scalars().all()
+        products = {p.id: p for p in prows}
+
+    rows: List[LinkRow] = []
+    for pid, by_plat in by_pid_platform.items():
+        p = products.get(pid)
+        if not p:
+            continue
+
+        by_source = [
+            LinkSourceBreakdown(
+                platform=plat,
+                clicks=by_plat.get(plat, {}).get("clicks", 0),
+                orders=by_plat.get(plat, {}).get("orders", 0),
+            )
+            for plat in PLATFORMS
+        ]
+
+        clicks = sum(s.clicks for s in by_source)
+        orders = sum(s.orders for s in by_source)
+        delivered = sum(v.get("delivered", 0) for v in by_plat.values())
+        returned = sum(v.get("returned", 0) for v in by_plat.values())
+        conv = (orders / clicks * 100.0) if clicks else 0.0
+        delivery_rate = (delivered / orders * 100.0) if orders else 0.0
+
+        rows.append(LinkRow(
+            product_id=p.id,
+            product_name=p.name,
+            slug=p.slug,
+            generated_url=f"{settings.link_domain}/r/{p.slug}",
+            image_url=p.image_url,
+            clicks=clicks,
+            orders=orders,
+            delivered=delivered,
+            returned=returned,
+            conversion_rate=round(conv, 2),
+            delivery_rate=round(delivery_rate, 2),
+            by_source=by_source,
+        ))
+
+    rows.sort(key=lambda r: (-r.orders, -r.clicks, r.product_name.lower()))
+
+    return TrackingLinksOut(
+        rows=rows,
+        window_days=days,
+        total_clicks=sum(r.clicks for r in rows),
+        total_orders=sum(r.orders for r in rows),
+        total_delivered=sum(r.delivered for r in rows),
+        total_returned=sum(r.returned for r in rows),
+        total_orders_unattributed=int(total_orders_unattributed or 0),
     )
