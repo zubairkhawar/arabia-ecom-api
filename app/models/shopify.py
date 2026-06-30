@@ -25,5 +25,6 @@ class ShopifyStore(Base, IdMixin, TimestampMixin):
     api_version: Mapped[str] = mapped_column(String(16), default="2024-10")
     verified: Mapped[bool] = mapped_column(Boolean, default=False)
     last_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_orders_sync_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     products_synced: Mapped[int] = mapped_column(Integer, default=0)
     orders_synced: Mapped[int] = mapped_column(Integer, default=0)

@@ -32,6 +32,14 @@ class Order(Base, IdMixin, TimestampMixin):
     purchase_event_sent: Mapped[bool] = mapped_column(default=False)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    # Shopify dedup keys — both NULL for WhatsApp orders. Partial unique
+    # index on (shopify_store_id, shopify_order_id) enforces dedup only
+    # when both are present (see alembic 7f3a9c2b5e81).
+    shopify_store_id: Mapped[Optional[str]] = mapped_column(
+        String(32), ForeignKey("shopify_stores.id", ondelete="SET NULL"), index=True
+    )
+    shopify_order_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
     items: Mapped[List["OrderItem"]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
     )

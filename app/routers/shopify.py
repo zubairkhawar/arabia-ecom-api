@@ -1,5 +1,6 @@
+from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,7 +10,7 @@ from ..deps import get_current_reseller
 from ..models import Reseller, ShopifyStore
 from ..security import encrypt
 from ..services.shopify_client import _normalize_domain, verify_token
-from ..services.shopify_sync import sync_store
+from ..services.shopify_sync import sync_store, sync_orders
 
 router = APIRouter(prefix="/me/shopify", tags=["shopify"])
 
@@ -27,7 +28,9 @@ class StoreOut(BaseModel):
     api_version: str
     verified: bool
     last_sync_at: Optional[str] = None
+    last_orders_sync_at: Optional[str] = None
     products_synced: int
+    orders_synced: int
 
 
 def _serialize(s: ShopifyStore) -> StoreOut:
@@ -35,7 +38,9 @@ def _serialize(s: ShopifyStore) -> StoreOut:
         id=s.id, name=s.name, shop_domain=s.shop_domain,
         api_version=s.api_version, verified=s.verified,
         last_sync_at=s.last_sync_at.isoformat() if s.last_sync_at else None,
+        last_orders_sync_at=s.last_orders_sync_at.isoformat() if s.last_orders_sync_at else None,
         products_synced=s.products_synced or 0,
+        orders_synced=s.orders_synced or 0,
     )
 
 
@@ -125,3 +130,38 @@ async def sync(
     except RuntimeError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
     return {"ok": True, **result, "last_sync_at": s.last_sync_at.isoformat() if s.last_sync_at else None}
+
+
+@router.post("/stores/{store_id}/sync-orders")
+async def sync_orders_route(
+    store_id: str,
+    current: Reseller = Depends(get_current_reseller),
+    db: Session = Depends(get_db),
+    since: Optional[str] = Query(
+        None,
+        description="ISO 8601 datetime. Default: store.last_orders_sync_at, or 90d ago on first sync.",
+    ),
+):
+    s = db.get(ShopifyStore, store_id)
+    if not s or s.reseller_id != current.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "store not found")
+    since_dt: Optional[datetime] = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "`since` must be ISO 8601 (e.g. 2026-01-15T00:00:00Z)",
+            )
+    try:
+        result = await sync_orders(db, current, s, since=since_dt)
+    except RuntimeError as e:
+        # Partial commits survive; last_orders_sync_at intentionally not
+        # advanced (see sync_orders docstring). Caller can safely retry.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e))
+    return {
+        "ok": True,
+        **result,
+        "last_orders_sync_at": s.last_orders_sync_at.isoformat() if s.last_orders_sync_at else None,
+    }

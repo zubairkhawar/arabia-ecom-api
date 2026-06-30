@@ -5,11 +5,11 @@ store admin (Apps → Develop apps → Create app → install). Token looks
 like `shpat_...` and never expires unless they revoke it. With it we
 can:
   - GET /admin/api/{ver}/products.json   → pull catalogue for AI context
-  - GET /admin/api/{ver}/orders.json     → optional sync of historical orders
+  - GET /admin/api/{ver}/orders.json     → pull historical/new orders
   - POST webhooks via Admin API           → register order-created callbacks (later)
-
-For phase 1: products only.
 """
+import asyncio
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 import httpx
 
@@ -94,4 +94,61 @@ async def fetch_products(
                         next_url = part.split(";")[0].strip().strip("<>")
                         break
             url = next_url
+    return out[:limit]
+
+
+async def _get_with_retry(
+    client: httpx.AsyncClient, url: str, headers: Dict[str, str], max_retries: int = 3
+) -> httpx.Response:
+    """GET with Shopify rate-limit (429) retry honouring Retry-After.
+    Shopify's REST leaky-bucket is 2 req/sec / 40-burst on standard plans;
+    sustained backfills can trip 429s mid-flight."""
+    for attempt in range(max_retries):
+        r = await client.get(url, headers=headers)
+        if r.status_code != 429:
+            return r
+        delay = float(r.headers.get("Retry-After", "2"))
+        await asyncio.sleep(min(delay, 10.0))
+    return r
+
+
+def _parse_next_link(link_header: Optional[str]) -> Optional[str]:
+    if not link_header:
+        return None
+    for part in link_header.split(","):
+        part = part.strip()
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
+
+
+async def fetch_orders(
+    domain: str,
+    access_token_enc: str,
+    api_version: str = "2024-10",
+    since: Optional[datetime] = None,
+    limit: int = 1000,
+) -> List[Dict[str, Any]]:
+    """Fetch orders via Admin REST API in created_at ASC order so partial
+    progress on rate-limit failure leaves the OLDEST orders written first
+    (retry from same `since` re-fetches them — dedup constraint no-ops).
+
+    status=any pulls open/closed/cancelled; default would only return open.
+    """
+    domain = _normalize_domain(domain)
+    headers = _headers(access_token_enc)
+    out: List[Dict[str, Any]] = []
+    params = "status=any&limit=50&order=created_at%20asc"
+    if since:
+        # Shopify accepts ISO 8601 with timezone in created_at_min
+        params += f"&created_at_min={since.isoformat()}"
+    url = f"https://{domain}/admin/api/{api_version}/orders.json?{params}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        while url and len(out) < limit:
+            r = await _get_with_retry(client, url, headers)
+            if r.status_code >= 400:
+                raise RuntimeError(f"Shopify fetch_orders HTTP {r.status_code}: {r.text[:400]}")
+            data = r.json()
+            out.extend(data.get("orders", []))
+            url = _parse_next_link(r.headers.get("link") or r.headers.get("Link"))
     return out[:limit]
