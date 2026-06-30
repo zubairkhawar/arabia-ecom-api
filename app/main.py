@@ -9,9 +9,10 @@ from .db import engine, SessionLocal
 from .routers import (
     auth, resellers, products, links, webhooks, chats,
     orders, templates, tracking, admin, billing, dashboard, shopify,
-    notifications,
+    notifications, cron,
 )
 from .services.admin_bootstrap import ensure_sole_admin
+from .services.billing import ensure_plans
 
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,10 @@ def _bootstrap() -> None:
         ensure_sole_admin(db)
     except Exception:
         log.exception("admin bootstrap failed")
+    try:
+        ensure_plans(db)
+    except Exception:
+        log.exception("plan seed failed")
     finally:
         db.close()
 
@@ -83,3 +88,4 @@ app.include_router(billing.router)
 app.include_router(dashboard.router)
 app.include_router(shopify.router)
 app.include_router(notifications.router)
+app.include_router(cron.router)

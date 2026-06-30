@@ -168,6 +168,23 @@ async def _handle_inbound_message(
     if chat.mode in ("human", "pending_human"):
         return
 
+    # Credit gating — try to consume 1 credit if this inbound starts a
+    # fresh 24h conversation. Returns True on continuation or successful
+    # consumption. On False (no credits / paused / cancelled), skip the
+    # AI reply entirely and notify the reseller once.
+    from ..services import credits as credits_service
+    if not credits_service.try_consume_for_conversation(
+        db, reseller.id, chat_id=chat.id, customer_id=customer.id,
+    ):
+        create_notification(
+            db, reseller_id=reseller.id, type="credits_exhausted",
+            title="Out of credits — AI paused",
+            body=f"A new conversation from {customer.name or phone} arrived but your plan is out of credits.",
+            href="/reseller/billing",
+            meta={"chat_id": chat.id, "customer_phone": phone},
+        )
+        return
+
     # Belt-and-braces: catch obvious "real agent" requests across EN/AR/RU
     # before paying the LLM round-trip — guarantees no customer is trapped.
     if heuristic_wants_human(text):
@@ -390,3 +407,111 @@ async def wa_pool_inbound(pool_number_id: str, request: Request, db: Session = D
     db.commit()
     return {"ok": True, "processed": processed, "unattributed": unattributed}
 
+
+
+# ===================== Tap Payments webhook =====================
+
+@router.post("/tap")
+async def tap_webhook(request: Request, db: Session = Depends(get_db)):
+    """Receives charge events from Tap Payments.
+
+    On a captured charge:
+      - kind=subscription → activate the paid plan + grant first period's credits
+      - kind=topup        → grant the purchased credit bundle
+    """
+    from ..services import payments_tap, billing as billing_service, credits as credits_service
+    from ..models import Payment
+
+    raw = await request.body()
+    sig = request.headers.get("tap-signature") or request.headers.get("hashstring") or ""
+    if not payments_tap.verify_webhook_signature(raw, sig):
+        raise HTTPException(401, "invalid signature")
+
+    payload = await request.json()
+    charge_id = payload.get("id")
+    tap_status = (payload.get("status") or "").upper()  # CAPTURED|FAILED|...
+    metadata = payload.get("metadata") or {}
+
+    if not charge_id:
+        raise HTTPException(422, "missing charge id")
+
+    payment = db.execute(
+        select(Payment).where(Payment.tap_charge_id == charge_id)
+    ).scalar_one_or_none()
+    if not payment:
+        log.warning("[tap-webhook] unknown charge %s — ignoring", charge_id)
+        return {"ok": True, "ignored": True}
+
+    # Idempotency — Tap may retry. Skip if already captured.
+    if payment.status == "captured":
+        return {"ok": True, "already_captured": True}
+
+    if tap_status != "CAPTURED":
+        payment.status = "failed" if tap_status in ("FAILED", "DECLINED", "VOIDED") else payment.status
+        db.commit()
+        return {"ok": True, "status": payment.status}
+
+    payment.status = "captured"
+    reseller_id = payment.reseller_id
+
+    if payment.kind == "subscription":
+        plan_code = payment.plan_code or metadata.get("plan_code")
+        cycle = (payment.meta or {}).get("billing_cycle") or metadata.get("billing_cycle") or "monthly"
+        try:
+            billing_service.activate_paid(db, reseller_id, plan_code=plan_code, billing_cycle=cycle)
+        except Exception as e:
+            log.exception("[tap-webhook] activate failed: %s", e)
+            raise HTTPException(500, "activation failed")
+    elif payment.kind == "topup":
+        amount = payment.credits_granted or (payment.meta or {}).get("credits")
+        if not amount:
+            raise HTTPException(422, "missing credits amount on topup")
+        credits_service.grant(
+            db, reseller_id, amount=int(amount), reason="topup_purchase",
+            note=f"Top-up purchase: {amount} credits",
+        )
+
+    db.commit()
+    return {"ok": True, "captured": True}
+
+
+# ===================== Dev-only Tap confirm (stub mode) =====================
+
+@router.post("/_dev/tap-confirm")
+@router.get("/_dev/tap-confirm")
+async def tap_dev_confirm(
+    charge: str,
+    reseller: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Stub-mode convenience: when tap_secret_key is empty, the fake
+    Charge redirect URL points here. We synthesize a CAPTURED webhook
+    payload so the rest of the flow exercises end-to-end in dev."""
+    from ..config import settings as _settings
+    if _settings.tap_secret_key:
+        raise HTTPException(403, "dev-confirm disabled when Tap is live")
+
+    from ..models import Payment
+    payment = db.execute(
+        select(Payment).where(Payment.tap_charge_id == charge)
+    ).scalar_one_or_none()
+    if not payment:
+        raise HTTPException(404, "charge not found")
+    if payment.status == "captured":
+        return {"ok": True, "already_captured": True, "redirect": f"{_settings.frontend_base_url}/reseller/billing?status=success"}
+
+    # Replay webhook handler internally
+    from ..services import billing as billing_service, credits as credits_service
+    payment.status = "captured"
+    if payment.kind == "subscription":
+        cycle = (payment.meta or {}).get("billing_cycle") or "monthly"
+        billing_service.activate_paid(db, payment.reseller_id, plan_code=payment.plan_code, billing_cycle=cycle)
+    elif payment.kind == "topup":
+        credits_service.grant(
+            db, payment.reseller_id, amount=int(payment.credits_granted or 0),
+            reason="topup_purchase",
+            note=f"Top-up: {payment.credits_granted} credits (dev confirm)",
+        )
+    db.commit()
+    return {"ok": True, "redirect": f"{_settings.frontend_base_url}/reseller/billing?status=success"}

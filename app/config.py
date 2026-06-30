@@ -26,5 +26,13 @@ class Settings(BaseSettings):
     admin_email: str = "arabiadropshipping05@gmail.com"
     admin_password: str = "admin-change-me"
 
+    # Cron endpoint shared secret — required to call /_cron/* endpoints
+    cron_token: str = "change-me-cron-token"
+
+    # Tap Payments (UAE-native payment processor)
+    tap_secret_key: str = ""
+    tap_publishable_key: str = ""
+    tap_webhook_secret: str = ""
+
 
 settings = Settings()

@@ -9,7 +9,7 @@ from .click import ClickSession, AttributionEvent
 from .pool import PoolNumber, PoolAssignment
 from .template import Template
 from .admin import AdminUser
-from .billing import Plan, Usage
+from .billing import Plan, Usage, Subscription, CreditLedger, Payment
 from .shopify import ShopifyStore
 from .notification import Notification
 from .platform_settings import PlatformSettings
@@ -19,6 +19,7 @@ __all__ = [
     "Product", "ProductOption", "ProductVariant", "ProductBundle",
     "Customer", "Order", "OrderItem", "Chat", "Message",
     "ClickSession", "AttributionEvent", "PoolNumber", "PoolAssignment",
-    "Template", "AdminUser", "Plan", "Usage", "ShopifyStore", "Notification",
+    "Template", "AdminUser", "Plan", "Usage", "Subscription", "CreditLedger",
+    "Payment", "ShopifyStore", "Notification",
     "PlatformSettings",
 ]

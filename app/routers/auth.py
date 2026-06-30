@@ -58,6 +58,9 @@ def signup(payload: SignupIn, db: Session = Depends(get_db)):
         response_length=(ps.default_response_length if ps else "Medium"),
         opening_message=opening,
     ))
+    # Auto-start the 7-day free trial (50 credits)
+    from ..services.billing import start_trial
+    start_trial(db, r.id)
     db.commit()
     db.refresh(r)
     return TokenResponse(
