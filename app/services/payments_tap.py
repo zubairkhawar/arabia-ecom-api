@@ -62,7 +62,8 @@ async def create_charge(
     if _stub_mode():
         # Local-dev fake — let the portal mark the charge as paid via a
         # dev-only confirm endpoint. Production must have a real key.
-        fake_id = f"chg_stub_{reseller_id[:12]}"
+        import secrets
+        fake_id = f"chg_stub_{reseller_id[:8]}_{secrets.token_hex(4)}"
         log.warning("[tap] STUB MODE — no tap_secret_key configured. Returning fake charge %s", fake_id)
         return {
             "id": fake_id,
